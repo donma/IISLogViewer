@@ -83,7 +83,7 @@ IIS Log Explorer 是一套 **Windows x64 專用、免安裝** 的 IIS W3C Log �
 
 ## 測試報告
 
-### 自動化測試（Release）：68 / 68 通過
+### 自動化測試（Release）：76 / 76 通過
 
 | 測試類別 | 內容 |
 | --- | --- |

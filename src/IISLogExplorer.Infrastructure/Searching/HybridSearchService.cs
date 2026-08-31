@@ -56,7 +56,7 @@ public sealed class HybridSearchService : ISearchService
         }
 
         var candidates = new PriorityQueue<SearchResult, SearchOrderKey>();
-        var retainedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var retainedKeys = new HashSet<SearchResultKey>();
         await foreach (var result in ScanRawAsync(rawFiles, request, cancellationToken).ConfigureAwait(false))
         {
             AddCandidate(result, request.MaxResults, candidates, retainedKeys);
@@ -113,10 +113,10 @@ public sealed class HybridSearchService : ISearchService
         return file.Length > state.FileSize || new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero) == state.LastWriteUtc;
     }
 
-    private static void AddCandidate(SearchResult result, int maxResults, PriorityQueue<SearchResult, SearchOrderKey> candidates, HashSet<string> retainedKeys)
+    private static void AddCandidate(SearchResult result, int maxResults, PriorityQueue<SearchResult, SearchOrderKey> candidates, HashSet<SearchResultKey> retainedKeys)
     {
         var key = Key(result);
-        if (retainedKeys.Contains(key))
+        if (!retainedKeys.Add(key))
         {
             return;
         }
@@ -125,25 +125,24 @@ public sealed class HybridSearchService : ISearchService
         if (candidates.Count < maxResults)
         {
             candidates.Enqueue(result, orderKey);
-            retainedKeys.Add(key);
             return;
         }
 
         candidates.TryPeek(out _, out var worstKey);
         if (orderKey.CompareTo(worstKey) <= 0)
         {
+            retainedKeys.Remove(key);
             return;
         }
 
         candidates.TryDequeue(out var removed, out _);
         retainedKeys.Remove(Key(removed!));
         candidates.Enqueue(result, orderKey);
-        retainedKeys.Add(key);
     }
 
-    private static SearchOrderKey OrderKey(SearchResult result) => new(result.Entry.TimestampUtc, result.Entry.Id, result.Entry.LineNumber);
+    private static SearchOrderKey OrderKey(SearchResult result) => new(result.Entry.TimestampUtc, result.SourcePath ?? result.SourceFile ?? string.Empty, result.Entry.LineNumber);
 
-    private static string Key(SearchResult result) => $"{result.SourcePath ?? result.SourceFile}|{result.Entry.LineNumber}";
+    private static SearchResultKey Key(SearchResult result) => new(result.Entry.SourceId, result.SourcePath ?? result.SourceFile ?? string.Empty, result.Entry.LineNumber);
 
     private async IAsyncEnumerable<SearchResult> ScanRawAsync(
         IEnumerable<(FileInfo File, LogFileInfo? State)> files,
@@ -153,16 +152,19 @@ public sealed class HybridSearchService : ISearchService
         foreach (var (file, state) in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await foreach (var result in ParseFileAsync(file, request, state?.IndexedLength ?? 0, state?.IndexedLineCount ?? 0, cancellationToken).ConfigureAwait(false))
+            await foreach (var result in ParseFileAsync(file, state, request, cancellationToken).ConfigureAwait(false))
             {
                 yield return result;
             }
         }
     }
 
-    private async IAsyncEnumerable<SearchResult> ParseFileAsync(FileInfo file, SearchRequest request, long start, long line, [EnumeratorCancellation] CancellationToken cancellationToken)
+    private async IAsyncEnumerable<SearchResult> ParseFileAsync(FileInfo file, LogFileInfo? state, SearchRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var enumerator = _parser.ParseAsync(file.FullName, request.Source.Id, 0, start, line, IisW3cLogParser.GetActiveHeader(file.FullName), cancellationToken).GetAsyncEnumerator(cancellationToken);
+        var start = state?.IndexedLength ?? 0;
+        var line = state?.IndexedLineCount ?? 0;
+        var header = state?.FieldsHeader ?? IisW3cLogParser.GetActiveHeader(file.FullName);
+        var enumerator = _parser.ParseAsync(file.FullName, request.Source.Id, 0, start, line, header, cancellationToken).GetAsyncEnumerator(cancellationToken);
         try
         {
             while (true)
@@ -204,7 +206,9 @@ public sealed class HybridSearchService : ISearchService
 
     private static string PrefixHash(string fingerprint) => fingerprint[(fingerprint.LastIndexOf('|') + 1)..];
 
-    private readonly record struct SearchOrderKey(DateTimeOffset? TimestampUtc, long Id, long LineNumber) : IComparable<SearchOrderKey>
+    private readonly record struct SearchResultKey(long SourceId, string FullPath, long LineNumber);
+
+    private readonly record struct SearchOrderKey(DateTimeOffset? TimestampUtc, string SourcePath, long LineNumber) : IComparable<SearchOrderKey>
     {
         public int CompareTo(SearchOrderKey other)
         {
@@ -214,8 +218,8 @@ public sealed class HybridSearchService : ISearchService
                 return timestamp;
             }
 
-            var id = Id.CompareTo(other.Id);
-            return id != 0 ? id : LineNumber.CompareTo(other.LineNumber);
+            var path = string.CompareOrdinal(SourcePath, other.SourcePath);
+            return path != 0 ? path : LineNumber.CompareTo(other.LineNumber);
         }
     }
 }

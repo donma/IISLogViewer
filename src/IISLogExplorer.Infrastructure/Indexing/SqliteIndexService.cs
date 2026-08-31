@@ -118,10 +118,13 @@ public sealed class SqliteIndexService : IIndexService
                 }
 
                 var finalFile = new FileInfo(file.FullName);
-                var finalFingerprint = await _fingerprints.ComputeAsync(finalFile, CancellationToken.None).ConfigureAwait(false);
-                var complete = lastOffset >= finalFile.Length || state.IndexedLineCount == 0 && !sawNewRecord && EndsWithNewLine(finalFile);
-                var indexedLength = complete ? finalFile.Length : lastOffset;
-                await _files.UpdateProgressAsync(state.Id, finalFile.Length, finalFile.LastWriteTimeUtc, indexedLength, lastLine, complete, finalFingerprint, IisW3cLogParser.GetActiveHeader(file.FullName), CancellationToken.None).ConfigureAwait(false);
+                await FinalizeSafelyAsync(async token =>
+                {
+                    var finalFingerprint = await _fingerprints.ComputeAsync(finalFile, token).ConfigureAwait(false);
+                    var complete = lastOffset >= finalFile.Length || state.IndexedLineCount == 0 && !sawNewRecord && EndsWithNewLine(finalFile);
+                    var indexedLength = complete ? finalFile.Length : lastOffset;
+                    await _files.UpdateProgressAsync(state.Id, finalFile.Length, finalFile.LastWriteTimeUtc, indexedLength, lastLine, complete, finalFingerprint, IisW3cLogParser.GetActiveHeader(file.FullName), token).ConfigureAwait(false);
+                }, file.FullName, lastOffset, lastLine).ConfigureAwait(false);
                 completedBytes += finalFile.Length;
                 ReportProgress(file.Name, total, completedBytes, 0, records);
             }
@@ -261,12 +264,36 @@ public sealed class SqliteIndexService : IIndexService
         catch (OperationCanceledException)
         {
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            await LogCheckpointFailureAsync("Checkpoint save failed", file.FullName, indexedLength, lineNumber, exception).ConfigureAwait(false);
+        }
+    }
+
+    private async Task FinalizeSafelyAsync(Func<CancellationToken, Task> action, string path, long offset, long line)
+    {
+        using var timeout = new CancellationTokenSource(CheckpointTimeout);
+        try
+        {
+            await action(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
         {
         }
-        catch (Microsoft.Data.Sqlite.SqliteException)
+        catch (Exception exception) when (exception is IOException or Microsoft.Data.Sqlite.SqliteException)
         {
+            await LogCheckpointFailureAsync("Final checkpoint save failed", path, offset, line, exception).ConfigureAwait(false);
         }
+    }
+
+    private async Task LogCheckpointFailureAsync(string message, string path, long offset, long line, Exception exception)
+    {
+        if (_logger is null)
+        {
+            return;
+        }
+
+        await _logger.LogAsync($"{message}; file={path} offset={offset} line={line} type={exception.GetType().Name} message={exception.Message}").ConfigureAwait(false);
     }
 
     private static bool RequiresReset(LogFileInfo state, FileInfo file, string fingerprint)

@@ -48,6 +48,8 @@ public sealed class ClientIpResolver
         return null;
     }
 
+    public IReadOnlyList<string> PriorityHeaders => _settings?.Current.ClientIpHeaderPriority is { Count: > 0 } configured ? configured : DefaultPriority;
+
     private static string? GetValue(LogEntry entry, string name)
     {
         if (name.Equals("c-ip", StringComparison.OrdinalIgnoreCase))

@@ -12,7 +12,8 @@ public class RealWorldSampleLogTests
     [Fact]
     public async Task Real_sample_with_custom_fields_and_forwarded_for()
     {
-        var entries = await CreateParser().ParseAsync(DataPath("sample.log"), 1).ToListAsync();
+        var parser = new IisW3cLogParser(new FieldsHeaderParser(), new ClientIpResolver(), new ParserOptions(IncludeAdditionalFields: true));
+        var entries = await parser.ParseAsync(DataPath("sample.log"), 1).ToListAsync();
         var entry = Assert.Single(entries);
         Assert.Equal("2024-01-01", entry.TimestampUtc?.ToString("yyyy-MM-dd"));
         Assert.Equal("127.0.0.1", entry.ServerIp);

@@ -5,6 +5,7 @@ namespace IISLogExplorer.Core.Parsing;
 public sealed class W3cFieldMap
 {
     private readonly Dictionary<string, int> _extra = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _resolver = new(StringComparer.OrdinalIgnoreCase);
     public int Date { get; private set; } = -1;
     public int Time { get; private set; } = -1;
     public int ServerIp { get; private set; } = -1;
@@ -28,11 +29,16 @@ public sealed class W3cFieldMap
     public int ForwardedFor { get; private set; } = -1;
     public int RealClientIp { get; private set; } = -1;
 
-    public bool HasExtraFields => _extra.Count > 0;
+    public int FieldCount { get; private set; }
+    public bool HasFields => FieldCount > 0;
 
-    public static W3cFieldMap Build(IReadOnlyList<FieldDefinition> fields)
+    public bool HasExtraFields => _extra.Count > 0;
+    public bool HasResolverFields => _resolver.Count > 0;
+
+    public static W3cFieldMap Build(IReadOnlyList<FieldDefinition> fields, IReadOnlyList<string>? resolverHeaders = null)
     {
-        var map = new W3cFieldMap();
+        var map = new W3cFieldMap { FieldCount = fields.Count };
+        var resolverNames = resolverHeaders is { Count: > 0 } ? resolverHeaders.Select(Normalize).ToHashSet(StringComparer.Ordinal) : null;
         foreach (var field in fields)
         {
             var index = field.Index;
@@ -59,13 +65,21 @@ public sealed class W3cFieldMap
             else if (normalized == "cs(cookie)" || normalized == "cscookie") map.Cookie = index;
             else if (normalized == "xforwardedfor" || normalized == "forwardedfor") map.ForwardedFor = index;
             else if (normalized == "xrealip" || normalized == "realip") map.RealClientIp = index;
-            else map._extra[field.Name] = index;
+            else
+            {
+                map._extra[field.Name] = index;
+                if (resolverNames is not null && resolverNames.Contains(normalized))
+                {
+                    map._resolver[field.Name] = index;
+                }
+            }
         }
 
         return map;
     }
 
     public IReadOnlyDictionary<string, int> ExtraIndexes => new ReadOnlyDictionary<string, int>(_extra);
+    public IReadOnlyDictionary<string, int> ResolverIndexes => new ReadOnlyDictionary<string, int>(_resolver);
 
     private static string Normalize(string value) => value.Replace("-", "", StringComparison.Ordinal).Replace("_", "", StringComparison.Ordinal).ToLowerInvariant();
 }

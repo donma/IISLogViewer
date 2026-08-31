@@ -12,11 +12,13 @@ public sealed class IisW3cLogParser : IIisLogParser
     private static readonly ConcurrentDictionary<string, string> HeaderCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly FieldsHeaderParser _headerParser;
     private readonly ClientIpResolver _ipResolver;
+    private readonly ParserOptions _options;
 
-    public IisW3cLogParser(FieldsHeaderParser headerParser, ClientIpResolver ipResolver)
+    public IisW3cLogParser(FieldsHeaderParser headerParser, ClientIpResolver ipResolver, ParserOptions? options = null)
     {
         _headerParser = headerParser;
         _ipResolver = ipResolver;
+        _options = options ?? new ParserOptions();
     }
 
     public static void InvalidateHeaderCache(string? path = null)
@@ -95,7 +97,7 @@ public sealed class IisW3cLogParser : IIisLogParser
                 continue;
             }
 
-            if (text.Length == 0 || text[0] == '#' || fieldsMap.Date < 0)
+            if (text.Length == 0 || text[0] == '#' || !fieldsMap.HasFields)
             {
                 continue;
             }
@@ -106,7 +108,7 @@ public sealed class IisW3cLogParser : IIisLogParser
                 continue;
             }
 
-            var extras = fieldsMap.HasExtraFields ? BuildExtras(tokens, fieldsMap) : null;
+            var extras = BuildExtras(tokens, fieldsMap, _options.IncludeAdditionalFields);
             LogEntry entry;
             try
             {
@@ -121,7 +123,7 @@ public sealed class IisW3cLogParser : IIisLogParser
         }
     }
 
-    private W3cFieldMap BuildFieldsMap(string headerLine) => W3cFieldMap.Build(_headerParser.Parse(headerLine).ToArray());
+    private W3cFieldMap BuildFieldsMap(string headerLine) => W3cFieldMap.Build(_headerParser.Parse(headerLine).ToArray(), _ipResolver.PriorityHeaders);
 
     private static bool IsRequestRecord(IReadOnlyList<ReadOnlyMemory<char>> tokens, W3cFieldMap fieldsMap)
     {
@@ -150,10 +152,16 @@ public sealed class IisW3cLogParser : IIisLogParser
         return DateTime.TryParseExact(raw.ToString(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
     }
 
-    private static Dictionary<string, string?>? BuildExtras(IReadOnlyList<ReadOnlyMemory<char>> tokens, W3cFieldMap fieldsMap)
+    private static Dictionary<string, string?>? BuildExtras(IReadOnlyList<ReadOnlyMemory<char>> tokens, W3cFieldMap fieldsMap, bool includeAll)
     {
         Dictionary<string, string?>? extras = null;
-        foreach (var pair in fieldsMap.ExtraIndexes)
+        var source = includeAll && fieldsMap.HasExtraFields ? fieldsMap.ExtraIndexes : fieldsMap.HasResolverFields ? fieldsMap.ResolverIndexes : null;
+        if (source is null)
+        {
+            return null;
+        }
+
+        foreach (var pair in source)
         {
             extras ??= new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
             extras[pair.Key] = pair.Value < tokens.Count ? NullIfMissing(tokens[pair.Value].ToString()) : null;

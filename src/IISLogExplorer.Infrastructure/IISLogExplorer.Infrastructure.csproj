@@ -5,6 +5,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="IISLogExplorer.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\IISLogExplorer.Core\IISLogExplorer.Core.csproj" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.11" />
