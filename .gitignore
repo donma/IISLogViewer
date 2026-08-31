@@ -13,3 +13,4 @@ RELEASE/*.db-wal
 *.db-wal
 Logs/
 sample-data/large/
+ai-guide/
