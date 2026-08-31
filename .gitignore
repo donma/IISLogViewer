@@ -1,7 +1,9 @@
 **/bin/
 **/obj/
 publish/
-RELEASE/
+RELEASE/*.db
+RELEASE/*.db-shm
+RELEASE/*.db-wal
 .vs/
 .idea/
 *.user
