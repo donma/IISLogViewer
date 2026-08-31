@@ -1,0 +1,15 @@
+{
+  "DefaultPageSize": 200,
+  "IndexBatchSize": 2000,
+  "DatabaseRetentionDays": null,
+  "DatabaseRetention": "保留全部",
+  "MaxSearchResults": 10000,
+  "RealtimeRefreshIntervalSeconds": 5,
+  "SlowRequestThresholdMs": 1000,
+  "Theme": "Dark",
+  "DisplayTimeZone": "Local",
+  "IncludeSubfolders": false,
+  "AllowIdleCleanup": false,
+  "ClientIpHeaderPriorityText": "CF-Connecting-IP, True-Client-IP, X-Forwarded-For, X-Real-IP, cnd-src-ip, c-ip",
+  "ClientIpHeaderPriority": [ "CF-Connecting-IP", "True-Client-IP", "X-Forwarded-For", "X-Real-IP", "cnd-src-ip", "c-ip" ]
+}

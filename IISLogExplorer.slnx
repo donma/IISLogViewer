@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/IISLogExplorer.App/IISLogExplorer.App.csproj" />
+    <Project Path="src/IISLogExplorer.Core/IISLogExplorer.Core.csproj" />
+    <Project Path="src/IISLogExplorer.Infrastructure/IISLogExplorer.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/IISLogExplorer.Tests/IISLogExplorer.Tests.csproj" />
+  </Folder>
+</Solution>

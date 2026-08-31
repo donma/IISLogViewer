@@ -1,0 +1,9 @@
+#Software: Microsoft Internet Information Services 10.0
+#Version: 1.0
+#Date: 2026-06-16 10:00:00
+#Fields: date time c-ip cs-method cs-uri-stem cs-uri-query sc-status sc-bytes cs(User-Agent) cs(Referer)
+2026-06-16 10:00:01 192.0.2.10 GET / - 200 1234 Mozilla/5.0 -
+2026-06-16 10:00:02 203.0.113.5 GET /login id=1'+OR+'1'='1 200 800 Mozilla/5.0 -
+2026-06-16 10:00:03 198.51.100.7 GET /admin - 404 0 nikto/2.1.6 -
+2026-06-16 10:00:04 198.51.100.8 GET /page q=<script>alert(1)</script> 200 200 Mozilla/5.0 -
+2026-06-16 10:00:05 198.51.100.9 GET /download path=../../../../windows/win.ini 400 0 Mozilla/5.0 -

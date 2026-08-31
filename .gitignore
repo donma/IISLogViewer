@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+publish/
+RELEASE/
+.vs/
+.idea/
+*.user
+*.suo
+*.db
+*.db-shm
+*.db-wal
+Logs/
+sample-data/large/
