@@ -174,4 +174,4 @@ dotnet publish src/IISLogExplorer.App/IISLogExplorer.App.csproj -c Release -r wi
 
 ## License
 
-No formal license file is provided; all rights reserved.
+Licensed under the [MIT License](LICENSE). Copyright (c) 2026 [Donma Lab](https://donmalab.com).

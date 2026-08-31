@@ -182,4 +182,4 @@ dotnet publish src/IISLogExplorer.App/IISLogExplorer.App.csproj -c Release -r wi
 
 ## 授權
 
-本專案目前未附正式授權檔案，保留所有權利。
+本專案採用 [MIT License](LICENSE)。Copyright (c) 2026 [Donma Lab](https://donmalab.com)。
