@@ -3,6 +3,12 @@ name: CI
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'README.md'
+      - 'README.en.md'
+      - 'docs/**'
+      - 'RELEASE/**'
+      - '**/*.md'
   pull_request:
 
 jobs:
