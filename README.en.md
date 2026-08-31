@@ -2,6 +2,12 @@
 
 [繁體中文](README.md)
 
+## Download
+
+Latest release: **[IISLogExplorer-v.1.2608312149.exe](https://github.com/donma/IISLogViewer/blob/main/RELEASE/IISLogExplorer-v.1.2608312149.exe)** (~74 MB, no-install, Windows x64, includes .NET 10 Runtime)
+
+Or browse the [RELEASE directory](https://github.com/donma/IISLogViewer/tree/main/RELEASE) for all files.
+
 ## Purpose
 
 IIS Log Explorer is a **Windows x64, no-install** tool for querying and analyzing IIS W3C logs. Engineers, operations, and security teams can open IIS logs for search and analysis without installing IIS, the .NET Runtime, ELK, SQL Server, or any agent.
@@ -43,7 +49,7 @@ Original IIS logs are **always opened read-only** — never modified, renamed, o
 
 ## Quick Start
 
-1. Grab the latest `IISLogExplorer-v.1.xxxxxx.exe` from `RELEASE\`
+1. Download the latest `IISLogExplorer-v.1.2608312149.exe` from the [RELEASE directory](https://github.com/donma/IISLogViewer/tree/main/RELEASE) (or grab the [latest exe](https://github.com/donma/IISLogViewer/blob/main/RELEASE/IISLogExplorer-v.1.2608312149.exe))
 2. Double-click to run (place it anywhere; the database is created next to the exe)
 3. Pick a source:
    - **Select Folder**: a folder containing `*.log` (optionally including subfolders)

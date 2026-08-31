@@ -2,6 +2,12 @@
 
 [English](README.en.md)
 
+## 下載
+
+最新版本：**[IISLogExplorer-v.1.2608312149.exe](https://github.com/donma/IISLogViewer/blob/main/RELEASE/IISLogExplorer-v.1.2608312149.exe)**（約 74 MB，免安裝、Windows x64，內含 .NET 10 Runtime）
+
+或瀏覽 [RELEASE 目錄](https://github.com/donma/IISLogViewer/tree/main/RELEASE) 查看所有檔案。
+
 ## 專案目的
 
 IIS Log Explorer 是一套 **Windows x64 專用、免安裝** 的 IIS W3C Log 查詢與分析工具。工程師、維運與資安人員不需要安裝 IIS、.NET Runtime、ELK、SQL Server 或任何 Agent，就能直接開啟 IIS 日誌進行搜尋與分析。
@@ -43,7 +49,7 @@ IIS Log Explorer 是一套 **Windows x64 專用、免安裝** 的 IIS W3C Log �
 
 ## 快速開始
 
-1. 從 `RELEASE\` 取得最新的 `IISLogExplorer-v.1.xxxxxx.exe`
+1. 從 [RELEASE 目錄](https://github.com/donma/IISLogViewer/tree/main/RELEASE) 下載最新版 `IISLogExplorer-v.1.2608312149.exe`（或直接下載 [最新 exe](https://github.com/donma/IISLogViewer/blob/main/RELEASE/IISLogExplorer-v.1.2608312149.exe)）
 2. 雙擊執行（可放在任何資料夾；資料庫會建立在 exe 同層）
 3. 選擇來源：
    - **選擇資料夾**：選一個含 `*.log` 的資料夾（可勾選「包含子資料夾」）
