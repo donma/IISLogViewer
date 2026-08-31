@@ -6,6 +6,8 @@ public sealed class W3cFieldMap
 {
     private readonly Dictionary<string, int> _extra = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _resolver = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IReadOnlyDictionary<string, int> _extraReadOnly;
+    private readonly IReadOnlyDictionary<string, int> _resolverReadOnly;
     public int Date { get; private set; } = -1;
     public int Time { get; private set; } = -1;
     public int ServerIp { get; private set; } = -1;
@@ -38,11 +40,11 @@ public sealed class W3cFieldMap
     public static W3cFieldMap Build(IReadOnlyList<FieldDefinition> fields, IReadOnlyList<string>? resolverHeaders = null)
     {
         var map = new W3cFieldMap { FieldCount = fields.Count };
-        var resolverNames = resolverHeaders is { Count: > 0 } ? resolverHeaders.Select(Normalize).ToHashSet(StringComparer.Ordinal) : null;
+        var resolverNames = resolverHeaders is { Count: > 0 } ? resolverHeaders.Select(HeaderNameNormalizer.Normalize).ToHashSet(StringComparer.Ordinal) : null;
         foreach (var field in fields)
         {
             var index = field.Index;
-            var normalized = Normalize(field.Name);
+            var normalized = HeaderNameNormalizer.Normalize(field.Name);
             if (normalized == "date") map.Date = index;
             else if (normalized == "time") map.Time = index;
             else if (normalized == "sip") map.ServerIp = index;
@@ -52,8 +54,8 @@ public sealed class W3cFieldMap
             else if (normalized == "sport") map.ServerPort = index;
             else if (normalized == "csusername") map.Username = index;
             else if (normalized == "cip") map.ClientIp = index;
-            else if (normalized == "cs(useragent)" || normalized == "csuseragent") map.UserAgent = index;
-            else if (normalized == "cs(referer)" || normalized == "csreferer") map.Referer = index;
+            else if (normalized == "useragent" || normalized == "csuseragent") map.UserAgent = index;
+            else if (normalized == "referer" || normalized == "csreferer") map.Referer = index;
             else if (normalized == "scstatus") map.StatusCode = index;
             else if (normalized == "scsubstatus") map.SubStatusCode = index;
             else if (normalized == "scwin32status") map.Win32Status = index;
@@ -62,7 +64,7 @@ public sealed class W3cFieldMap
             else if (normalized == "csbytes") map.BytesReceived = index;
             else if (normalized == "shost" || normalized == "cshost") map.Host = index;
             else if (normalized == "csversion") map.ProtocolVersion = index;
-            else if (normalized == "cs(cookie)" || normalized == "cscookie") map.Cookie = index;
+            else if (normalized == "cookie" || normalized == "cscookie") map.Cookie = index;
             else if (normalized == "xforwardedfor" || normalized == "forwardedfor") map.ForwardedFor = index;
             else if (normalized == "xrealip" || normalized == "realip") map.RealClientIp = index;
             else
@@ -78,8 +80,12 @@ public sealed class W3cFieldMap
         return map;
     }
 
-    public IReadOnlyDictionary<string, int> ExtraIndexes => new ReadOnlyDictionary<string, int>(_extra);
-    public IReadOnlyDictionary<string, int> ResolverIndexes => new ReadOnlyDictionary<string, int>(_resolver);
+    public IReadOnlyDictionary<string, int> ExtraIndexes => _extraReadOnly;
+    public IReadOnlyDictionary<string, int> ResolverIndexes => _resolverReadOnly;
 
-    private static string Normalize(string value) => value.Replace("-", "", StringComparison.Ordinal).Replace("_", "", StringComparison.Ordinal).ToLowerInvariant();
+    internal W3cFieldMap()
+    {
+        _extraReadOnly = new ReadOnlyDictionary<string, int>(_extra);
+        _resolverReadOnly = new ReadOnlyDictionary<string, int>(_resolver);
+    }
 }

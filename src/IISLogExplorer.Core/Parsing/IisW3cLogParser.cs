@@ -9,7 +9,9 @@ namespace IISLogExplorer.Core.Parsing;
 
 public sealed class IisW3cLogParser : IIisLogParser
 {
+    private const int HeaderCacheMax = 1024;
     private static readonly ConcurrentDictionary<string, string> HeaderCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object HeaderCacheGate = new();
     private readonly FieldsHeaderParser _headerParser;
     private readonly ClientIpResolver _ipResolver;
     private readonly ParserOptions _options;
@@ -25,12 +27,14 @@ public sealed class IisW3cLogParser : IIisLogParser
     {
         if (string.IsNullOrEmpty(path))
         {
-            HeaderCache.Clear();
+            lock (HeaderCacheGate)
+            {
+                HeaderCache.Clear();
+            }
+            return;
         }
-        else
-        {
-            HeaderCache.TryRemove(path, out _);
-        }
+
+        HeaderCache.TryRemove(path, out _);
     }
 
     public static string? GetActiveHeader(string path)
@@ -41,6 +45,25 @@ public sealed class IisW3cLogParser : IIisLogParser
         }
 
         return HeaderCache.TryGetValue(path, out var header) ? header : null;
+    }
+
+    private static void CacheHeader(string path, string header)
+    {
+        if (!HeaderCache.TryGetValue(path, out _) && HeaderCache.Count >= HeaderCacheMax)
+        {
+            lock (HeaderCacheGate)
+            {
+                if (HeaderCache.Count >= HeaderCacheMax)
+                {
+                    HeaderCache.Clear();
+                }
+            }
+        }
+
+        lock (HeaderCacheGate)
+        {
+            HeaderCache[path] = header;
+        }
     }
 
     public async IAsyncEnumerable<LogEntry> ParseAsync(
@@ -80,7 +103,7 @@ public sealed class IisW3cLogParser : IIisLogParser
             if (headerLine is not null)
             {
                 fieldsMap = BuildFieldsMap(headerLine);
-                HeaderCache[path] = headerLine;
+                CacheHeader(path, headerLine);
             }
         }
         var lineNumber = startLineNumber;
@@ -93,7 +116,7 @@ public sealed class IisW3cLogParser : IIisLogParser
             if (text.StartsWith("#Fields:", StringComparison.OrdinalIgnoreCase))
             {
                 fieldsMap = BuildFieldsMap(text);
-                HeaderCache[path] = text;
+                CacheHeader(path, text);
                 continue;
             }
 
@@ -114,7 +137,7 @@ public sealed class IisW3cLogParser : IIisLogParser
             {
                 entry = Map(tokens, fieldsMap, extras, text, sourceId, fileId, lineNumber);
             }
-            catch
+            catch (Exception exception) when (exception is FormatException or OverflowException or ArgumentException)
             {
                 continue;
             }

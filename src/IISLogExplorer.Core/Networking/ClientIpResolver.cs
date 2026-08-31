@@ -1,6 +1,7 @@
 using System.Net;
 using IISLogExplorer.Core.Configuration;
 using IISLogExplorer.Core.Models;
+using IISLogExplorer.Core.Parsing;
 
 namespace IISLogExplorer.Core.Networking;
 
@@ -59,16 +60,16 @@ public sealed class ClientIpResolver
 
         if (name.Equals("X-Forwarded-For", StringComparison.OrdinalIgnoreCase))
         {
-            return entry.ForwardedFor ?? FirstMatch(entry, x => x.Contains("forwarded", StringComparison.OrdinalIgnoreCase));
+            return entry.ForwardedFor ?? FirstMatch(entry, x => HeaderNameNormalizer.Normalize(x).Contains("forwarded", StringComparison.Ordinal));
         }
 
         if (name.Equals("X-Real-IP", StringComparison.OrdinalIgnoreCase))
         {
-            return entry.RealClientIp ?? FirstMatch(entry, x => x.Contains("real-ip", StringComparison.OrdinalIgnoreCase));
+            return entry.RealClientIp ?? FirstMatch(entry, x => HeaderNameNormalizer.Normalize(x).Contains("realip", StringComparison.Ordinal));
         }
 
-        var normalized = Normalize(name);
-        return FirstMatch(entry, x => Normalize(x) == normalized);
+        var normalized = HeaderNameNormalizer.Normalize(name);
+        return FirstMatch(entry, x => HeaderNameNormalizer.Normalize(x) == normalized);
     }
 
     private static string? FirstMatch(LogEntry entry, Func<string, bool> predicate)
@@ -88,6 +89,4 @@ public sealed class ClientIpResolver
 
         return null;
     }
-
-    private static string Normalize(string value) => value.Replace("cs(", "", StringComparison.OrdinalIgnoreCase).Replace("sc(", "", StringComparison.OrdinalIgnoreCase).Replace(")", "", StringComparison.Ordinal).Replace("-", "", StringComparison.Ordinal).Replace("_", "", StringComparison.Ordinal).ToLowerInvariant();
 }

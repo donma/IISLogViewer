@@ -83,7 +83,7 @@ IIS Log Explorer 是一套 **Windows x64 專用、免安裝** 的 IIS W3C Log �
 
 ## 測試報告
 
-### 自動化測試（Release）：76 / 76 通過
+### 自動化測試（Release）：80 / 80 通過
 
 | 測試類別 | 內容 |
 | --- | --- |
@@ -99,6 +99,7 @@ IIS Log Explorer 是一套 **Windows x64 專用、免安裝** 的 IIS W3C Log �
 | 大量資料 | 20,000 與 100,000 筆真實 IIS 格式資料的搜尋、索引、篩選與資安分析 |
 | 效能 | 100,000 筆解析與索引在時間限制內完成 |
 | v2 修正 | Retention、Incremental Header 持久化、Realtime partial line / line number / truncate、Hybrid 全域排序與 MaxResults、Progress 單調、Migration、並發讀取、全過濾器 parity |
+| 最終修正 | 無 date/time Header 相容、Hybrid/Realtime 使用 persisted Header、自訂 Client IP header（`cs()` wrapper）normalize 統一、AdditionalFields 預設關閉、HeaderCache bounded、Parser exception 收窄 |
 
 ### v2 修正重點
 
@@ -108,6 +109,13 @@ IIS Log Explorer 是一套 **Windows x64 專用、免安裝** 的 IIS W3C Log �
 - **Hybrid Search**：移除全域鎖、全域 `TimestampUtc DESC` 排序（有界記憶體）、MaxResults 套用於排序後
 - **Realtime**：初次定位到最後完整換行並接續行號，truncate / rotation 安全重置
 - **架構**：IndexCoordinator 單一 writer、MainViewModel 拆分 Search / Index / Realtime、集中錯誤處理與診斷日誌
+
+### 最終修正重點
+
+- **Client IP Header Normalize 統一**：`CF-Connecting-IP` / `cs(CF-Connecting-IP)` / `cf_connecting_ip` 視為同一欄位（CDN / Proxy / Cloudflare / ARR 情境正確解析）
+- **Hybrid / Realtime**：重啟後直接使用 DB 持久化的 `FieldsHeader`，未索引大檔不 full scan（tail backward scan）
+- **AdditionalFields**：Index / Search / Realtime 預設不建立完整欄位字典，只 materialize Client IP resolver 需要的自訂 header
+- **穩健性**：HeaderCache 上限 1024、Parser Map 只捕捉格式相關例外、Realtime DB lookup 失敗有 diagnostics
 
 ### 以真實資料發現並修正的問題
 

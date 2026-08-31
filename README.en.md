@@ -83,12 +83,12 @@ Last 15 minutes, last 1 hour, today, yesterday, last 24 hours, last 7 days, cust
 
 ## Test Report
 
-### Automated tests (Release): 51 / 51 passed
+### Automated tests (Release): 80 / 80 passed
 
 | Category | Contents |
 | --- | --- |
 | Parser | Standard W3C, different field order, missing fields, mid-file header change, malformed lines, Unicode URLs, long user agents, quoted fields |
-| Client IP Resolver | X-Forwarded-For multi-IP (first valid), custom priority |
+| Client IP Resolver | X-Forwarded-For multi-IP (first valid), custom priority, `cs()`-wrapped custom headers |
 | Repository | INSERT OR IGNORE dedup, status filter |
 | Analyzers | IP / Errors / Slow Request / Traffic aggregation and percentiles |
 | Security | Sensitive path scoring, normal traffic stays low, scanner heuristic |
@@ -98,6 +98,16 @@ Last 15 minutes, last 1 hour, today, yesterday, last 24 hours, last 7 days, cust
 | Real security sample | Real attack sample with SQL injection, XSS, path traversal — matched by the production 34 rules |
 | Large volume | Search, index, filter, and security analysis on 20,000 and 100,000 IIS-format records |
 | Performance | Parsing and indexing 100,000 records within the time budget |
+| Round 2 & final fixes | Headers without date/time, persisted-header hybrid/realtime, backward tail scan, full filter parity, null-timestamp ordering, dedup identity, 4 `cs()`-wrapped custom IP tests |
+
+### Round 2 & final fix highlights
+
+- **Client IP header normalization unified**: `CF-Connecting-IP`, `cs(CF-Connecting-IP)`, and `cf_connecting_ip` are treated as the same field — correct behind CDN / reverse proxy / Cloudflare / ARR
+- **Hybrid / Realtime**: use the DB-persisted `FieldsHeader` after restart; unindexed large logs never full-scan (tail backward scan)
+- **Parser headers**: legal logs without `date`/`time` fields parse normally (timestamps null); persisted header resumes indexing from the checkpoint without rescanning
+- **AdditionalFields**: disabled by default on the Index/Search/Realtime hot path; only Client-IP-resolver headers are materialized
+- **Robustness**: HeaderCache capped at 1024; parser `Map` catches only format-related exceptions; realtime DB lookup failures are logged with diagnostics
+- **Retention / progress / hybrid**: cleanup no longer resurrects deleted rows; progress is monotonic; hybrid results are globally ordered with bounded memory; MaxResults applies after ordering
 
 ### Issues found with real data (now fixed)
 

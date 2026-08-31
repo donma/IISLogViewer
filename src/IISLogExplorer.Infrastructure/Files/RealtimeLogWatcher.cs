@@ -3,6 +3,7 @@ using IISLogExplorer.Core.Models;
 using IISLogExplorer.Core.Parsing;
 using IISLogExplorer.Core.Realtime;
 using IISLogExplorer.Infrastructure.Database;
+using IISLogExplorer.Infrastructure.Logging;
 
 namespace IISLogExplorer.Infrastructure.Files;
 
@@ -12,6 +13,7 @@ public sealed class RealtimeLogWatcher : IRealtimeMonitor
     private readonly LogFileScanner _scanner;
     private readonly ISettingsService _settings;
     private readonly LogFileRepository _files;
+    private readonly AppLogger? _logger;
     private readonly Dictionary<string, RealtimeFilePosition> _positions = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _stop;
     private Task? _worker;
@@ -19,9 +21,9 @@ public sealed class RealtimeLogWatcher : IRealtimeMonitor
     public bool IsRunning => _worker is { IsCompleted: false };
     public event EventHandler<IReadOnlyList<LogEntry>>? EntriesAdded;
 
-    public RealtimeLogWatcher(IisW3cLogParser parser, LogFileScanner scanner, ISettingsService settings, LogFileRepository files)
+    public RealtimeLogWatcher(IisW3cLogParser parser, LogFileScanner scanner, ISettingsService settings, LogFileRepository files, AppLogger? logger = null)
     {
-        _parser = parser; _scanner = scanner; _settings = settings; _files = files;
+        _parser = parser; _scanner = scanner; _settings = settings; _files = files; _logger = logger;
     }
 
     public async Task StartAsync(LogSource source, CancellationToken cancellationToken = default)
@@ -137,8 +139,12 @@ public sealed class RealtimeLogWatcher : IRealtimeMonitor
             {
                 throw;
             }
-            catch
+            catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or Microsoft.Data.Sqlite.SqliteException)
             {
+                if (_logger is not null)
+                {
+                    await _logger.LogAsync($"Realtime attach state lookup failed; file={file.FullName} type={exception.GetType().Name} message={exception.Message} fallback=tail-scan").ConfigureAwait(false);
+                }
             }
         }
 
