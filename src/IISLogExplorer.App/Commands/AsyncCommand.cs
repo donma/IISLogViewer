@@ -1,4 +1,5 @@
 using System.Windows.Input;
+using IISLogExplorer.App.Diagnostics;
 
 namespace IISLogExplorer.App.Commands;
 
@@ -6,12 +7,16 @@ public sealed class AsyncCommand : ICommand
 {
     private readonly Func<Task> _execute;
     private readonly Func<bool>? _canExecute;
+    private readonly IErrorHandler? _errorHandler;
     private bool _running;
 
-    public AsyncCommand(Func<Task> execute, Func<bool>? canExecute = null)
+    public static IErrorHandler? DefaultHandler { get; set; }
+
+    public AsyncCommand(Func<Task> execute, Func<bool>? canExecute = null, IErrorHandler? errorHandler = null)
     {
         _execute = execute;
         _canExecute = canExecute;
+        _errorHandler = errorHandler ?? DefaultHandler;
     }
 
     public bool CanExecute(object? parameter) => !_running && (_canExecute?.Invoke() ?? true);
@@ -30,6 +35,13 @@ public sealed class AsyncCommand : ICommand
         try
         {
             await _execute().ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            _errorHandler?.Handle(exception);
         }
         finally
         {

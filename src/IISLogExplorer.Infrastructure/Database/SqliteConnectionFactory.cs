@@ -4,6 +4,8 @@ namespace IISLogExplorer.Infrastructure.Database;
 
 public sealed class SqliteConnectionFactory
 {
+    public event Action<string>? BusyObserved;
+
     public string DatabasePath { get; }
 
     public SqliteConnectionFactory(string? databasePath = null)
@@ -21,7 +23,18 @@ public sealed class SqliteConnectionFactory
     public async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken = default)
     {
         var connection = Create();
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception) when (IsBusy(exception))
+        {
+            BusyObserved?.Invoke(exception.Message);
+            throw;
+        }
+
         return connection;
     }
+
+    private static bool IsBusy(SqliteException exception) => exception.SqliteErrorCode is 5 or 6;
 }

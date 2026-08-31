@@ -14,3 +14,4 @@ RELEASE/*.db-wal
 Logs/
 sample-data/large/
 ai-guide/
+BenchmarkDotNet.Artifacts/

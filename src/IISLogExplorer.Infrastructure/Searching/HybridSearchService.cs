@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using IISLogExplorer.Core.Models;
 using IISLogExplorer.Core.Parsing;
 using IISLogExplorer.Core.Searching;
@@ -13,7 +14,6 @@ public sealed class HybridSearchService : ISearchService
     private readonly LogFileRepository _files;
     private readonly LogEntryRepository _entries;
     private readonly FileFingerprintService _fingerprints;
-    private readonly SemaphoreSlim _searchGate = new(1, 1);
 
     public HybridSearchService(LogFileScanner scanner, IIisLogParser parser, LogFileRepository files, LogEntryRepository entries, FileFingerprintService fingerprints)
     {
@@ -24,64 +24,60 @@ public sealed class HybridSearchService : ISearchService
         _fingerprints = fingerprints;
     }
 
-    public async IAsyncEnumerable<SearchResult> SearchAsync(SearchRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<SearchResult> SearchAsync(SearchRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        await _searchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        if (request.MaxResults <= 0)
         {
-            var diskFiles = await _scanner.ScanFilesAsync(request.Source, cancellationToken).ConfigureAwait(false);
-            var states = await _files.GetBySourceAsync(request.Source.Id, cancellationToken).ConfigureAwait(false);
-            var stateByPath = states.ToDictionary(x => x.FullPath, StringComparer.OrdinalIgnoreCase);
-            var rawFiles = new List<(FileInfo File, LogFileInfo? State)>();
-            var indexedFileIds = new List<long>();
+            yield break;
+        }
 
-            foreach (var file in diskFiles)
+        var diskFiles = await _scanner.ScanFilesAsync(request.Source, cancellationToken).ConfigureAwait(false);
+        var states = await _files.GetBySourceAsync(request.Source.Id, cancellationToken).ConfigureAwait(false);
+        var stateByPath = states.ToDictionary(x => x.FullPath, StringComparer.OrdinalIgnoreCase);
+        var rawFiles = new List<(FileInfo File, LogFileInfo? State)>();
+        var indexedFileIds = new List<long>();
+
+        foreach (var file in diskFiles)
+        {
+            stateByPath.TryGetValue(file.FullName, out var state);
+            if (state is not null && state.IndexedLength > 0 && await IsStateUsableAsync(file, state, cancellationToken).ConfigureAwait(false))
             {
-                stateByPath.TryGetValue(file.FullName, out var state);
-                if (state is not null && state.IndexedLength > 0 && await IsStateUsableAsync(file, state, cancellationToken).ConfigureAwait(false))
+                indexedFileIds.Add(state.Id);
+                if (state.IsFullyIndexed && state.IndexedLength >= file.Length)
                 {
-                    indexedFileIds.Add(state.Id);
-                    if (state.IsFullyIndexed && state.IndexedLength >= file.Length)
-                    {
-                        continue;
-                    }
-
-                    rawFiles.Add((file, state));
                     continue;
                 }
 
-                rawFiles.Add((file, null));
+                rawFiles.Add((file, state));
+                continue;
             }
 
-            var yielded = 0;
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            await foreach (var result in ScanRawAsync(rawFiles, request, cancellationToken).ConfigureAwait(false))
-            {
-                if (yielded >= request.MaxResults) yield break;
-                if (seen.Add(Key(result)))
-                {
-                    yielded++;
-                    yield return result;
-                }
-            }
-
-            if (indexedFileIds.Count > 0)
-            {
-                await foreach (var result in _entries.SearchAsync(request, indexedFileIds, cancellationToken).ConfigureAwait(false))
-                {
-                    if (yielded >= request.MaxResults) yield break;
-                    if (seen.Add(Key(result)))
-                    {
-                        yielded++;
-                        yield return result;
-                    }
-                }
-            }
+            rawFiles.Add((file, null));
         }
-        finally
+
+        var candidates = new PriorityQueue<SearchResult, SearchOrderKey>();
+        var retainedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await foreach (var result in ScanRawAsync(rawFiles, request, cancellationToken).ConfigureAwait(false))
         {
-            _searchGate.Release();
+            AddCandidate(result, request.MaxResults, candidates, retainedKeys);
+        }
+
+        await foreach (var result in _entries.SearchAsync(request, indexedFileIds, cancellationToken).ConfigureAwait(false))
+        {
+            AddCandidate(result, request.MaxResults, candidates, retainedKeys);
+        }
+
+        var ordered = new List<SearchResult>(candidates.Count);
+        while (candidates.TryDequeue(out var result, out _))
+        {
+            ordered.Add(result);
+        }
+
+        ordered.Sort(static (left, right) => OrderKey(right).CompareTo(OrderKey(left)));
+        foreach (var result in ordered)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return result;
         }
     }
 
@@ -117,25 +113,56 @@ public sealed class HybridSearchService : ISearchService
         return file.Length > state.FileSize || new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero) == state.LastWriteUtc;
     }
 
+    private static void AddCandidate(SearchResult result, int maxResults, PriorityQueue<SearchResult, SearchOrderKey> candidates, HashSet<string> retainedKeys)
+    {
+        var key = Key(result);
+        if (retainedKeys.Contains(key))
+        {
+            return;
+        }
+
+        var orderKey = OrderKey(result);
+        if (candidates.Count < maxResults)
+        {
+            candidates.Enqueue(result, orderKey);
+            retainedKeys.Add(key);
+            return;
+        }
+
+        candidates.TryPeek(out _, out var worstKey);
+        if (orderKey.CompareTo(worstKey) <= 0)
+        {
+            return;
+        }
+
+        candidates.TryDequeue(out var removed, out _);
+        retainedKeys.Remove(Key(removed!));
+        candidates.Enqueue(result, orderKey);
+        retainedKeys.Add(key);
+    }
+
+    private static SearchOrderKey OrderKey(SearchResult result) => new(result.Entry.TimestampUtc, result.Entry.Id, result.Entry.LineNumber);
+
     private static string Key(SearchResult result) => $"{result.SourcePath ?? result.SourceFile}|{result.Entry.LineNumber}";
 
-    private async IAsyncEnumerable<SearchResult> ScanRawAsync(IEnumerable<(FileInfo File, LogFileInfo? State)> files, SearchRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    private async IAsyncEnumerable<SearchResult> ScanRawAsync(
+        IEnumerable<(FileInfo File, LogFileInfo? State)> files,
+        SearchRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         foreach (var (file, state) in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var start = state?.IndexedLength ?? 0;
-            var line = state?.IndexedLineCount ?? 0;
-            await foreach (var result in ParseFileAsync(file, request, start, line, cancellationToken).ConfigureAwait(false))
+            await foreach (var result in ParseFileAsync(file, request, state?.IndexedLength ?? 0, state?.IndexedLineCount ?? 0, cancellationToken).ConfigureAwait(false))
             {
                 yield return result;
             }
         }
     }
 
-    private async IAsyncEnumerable<SearchResult> ParseFileAsync(FileInfo file, SearchRequest request, long start, long line, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    private async IAsyncEnumerable<SearchResult> ParseFileAsync(FileInfo file, SearchRequest request, long start, long line, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var enumerator = _parser.ParseAsync(file.FullName, request.Source.Id, 0, start, line, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        var enumerator = _parser.ParseAsync(file.FullName, request.Source.Id, 0, start, line, IisW3cLogParser.GetActiveHeader(file.FullName), cancellationToken).GetAsyncEnumerator(cancellationToken);
         try
         {
             while (true)
@@ -163,7 +190,7 @@ public sealed class HybridSearchService : ISearchService
                     break;
                 }
 
-                if (Matches(entry, request))
+                if (SearchPredicate.Matches(entry, request))
                 {
                     yield return new SearchResult { Entry = entry, SourceFile = file.Name, SourcePath = file.FullName, IsIndexed = false };
                 }
@@ -175,24 +202,20 @@ public sealed class HybridSearchService : ISearchService
         }
     }
 
-    private static bool Matches(LogEntry entry, SearchRequest request)
-    {
-        if (!string.IsNullOrWhiteSpace(request.Keyword) && !Contains(entry.RawLine, request.Keyword) && !Contains(entry.ClientIp, request.Keyword) && !Contains(entry.ResolvedClientIp, request.Keyword) && !Contains(entry.UriStem, request.Keyword) && !Contains(entry.UriQuery, request.Keyword) && !Contains(entry.UserAgent, request.Keyword) && !Contains(entry.Method, request.Keyword) && entry.StatusCode != (int.TryParse(request.Keyword, out var status) ? status : -1)) return false;
-        if (request.From is not null && (entry.TimestampUtc is null || entry.TimestampUtc < request.From)) return false;
-        if (request.To is not null && (entry.TimestampUtc is null || entry.TimestampUtc > request.To)) return false;
-        if (request.TimeFrom is not null && (entry.TimestampUtc is null || entry.TimestampUtc.Value.TimeOfDay < request.TimeFrom)) return false;
-        if (request.TimeTo is not null && (entry.TimestampUtc is null || entry.TimestampUtc.Value.TimeOfDay > request.TimeTo)) return false;
-        if (!string.IsNullOrWhiteSpace(request.Method) && !string.Equals(entry.Method, request.Method, StringComparison.OrdinalIgnoreCase)) return false;
-        if (request.StatusCode is not null && entry.StatusCode != request.StatusCode) return false;
-        if (!string.IsNullOrWhiteSpace(request.ClientIp) && !Contains(entry.ClientIp, request.ClientIp) && !Contains(entry.ResolvedClientIp, request.ClientIp)) return false;
-        if (!string.IsNullOrWhiteSpace(request.UrlContains) && !Contains(entry.DisplayUrl, request.UrlContains)) return false;
-        if (!string.IsNullOrWhiteSpace(request.UserAgentContains) && !Contains(entry.UserAgent, request.UserAgentContains)) return false;
-        if (request.MinTimeTakenMs is not null && (entry.TimeTakenMs is null || entry.TimeTakenMs < request.MinTimeTakenMs)) return false;
-        if (request.MaxTimeTakenMs is not null && (entry.TimeTakenMs is null || entry.TimeTakenMs > request.MaxTimeTakenMs)) return false;
-        if (!string.IsNullOrWhiteSpace(request.Username) && !Contains(entry.Username, request.Username)) return false;
-        return true;
-    }
-
-    private static bool Contains(string? value, string? search) => value?.Contains(search ?? string.Empty, StringComparison.OrdinalIgnoreCase) == true;
     private static string PrefixHash(string fingerprint) => fingerprint[(fingerprint.LastIndexOf('|') + 1)..];
+
+    private readonly record struct SearchOrderKey(DateTimeOffset? TimestampUtc, long Id, long LineNumber) : IComparable<SearchOrderKey>
+    {
+        public int CompareTo(SearchOrderKey other)
+        {
+            var timestamp = Nullable.Compare(TimestampUtc, other.TimestampUtc);
+            if (timestamp != 0)
+            {
+                return timestamp;
+            }
+
+            var id = Id.CompareTo(other.Id);
+            return id != 0 ? id : LineNumber.CompareTo(other.LineNumber);
+        }
+    }
 }

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using IISLogExplorer.App.ViewModels;
 using IISLogExplorer.Core.Analysis;
@@ -44,6 +45,10 @@ public partial class App : System.Windows.Application
                 .Build();
             await _host.StartAsync();
             Services = _host.Services;
+            var logger = Services.GetRequiredService<AppLogger>();
+            SecurityRuleEngine.LoadFailed += exception => _ = logger.LogAsync("Security rules load failure", exception);
+            Services.GetRequiredService<SqliteConnectionFactory>().BusyObserved += message => _ = logger.LogAsync($"Sqlite busy: {message}");
+            await logger.LogAsync($"Application startup; db={Path.Combine(AppContext.BaseDirectory, "IISLogExplorer.db")}");
             await Services.GetRequiredService<DatabaseInitializer>().InitializeAsync();
             var window = Services.GetRequiredService<MainWindow>();
             MainWindow = window;
@@ -82,6 +87,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<LogFileScanner>();
         services.AddSingleton<FileFingerprintService>();
         services.AddSingleton<IIndexService, SqliteIndexService>();
+        services.AddSingleton<IIndexCoordinator, IndexCoordinator>();
         services.AddSingleton<ISearchService, HybridSearchService>();
         services.AddSingleton<IIisDiscoveryService, IisDiscoveryService>();
         services.AddSingleton<ISettingsService, SettingsService>();

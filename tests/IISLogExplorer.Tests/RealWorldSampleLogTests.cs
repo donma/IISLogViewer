@@ -21,7 +21,7 @@ public class RealWorldSampleLogTests
         Assert.Equal("GET", entry.Method);
         Assert.Equal("/index.html", entry.UriStem);
         Assert.Equal(200, entry.StatusCode);
-        Assert.NotNull(entry.AdditionalFields["x(My-Field)"]);
+        Assert.NotNull(entry.AdditionalFields!["x(My-Field)"]);
     }
 
     [Fact]

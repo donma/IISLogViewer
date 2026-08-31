@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using IISLogExplorer.Core.Configuration;
 using IISLogExplorer.Core.Files;
 using IISLogExplorer.Core.Indexing;
@@ -5,11 +6,13 @@ using IISLogExplorer.Core.Models;
 using IISLogExplorer.Core.Parsing;
 using IISLogExplorer.Infrastructure.Database;
 using IISLogExplorer.Infrastructure.Files;
+using IISLogExplorer.Infrastructure.Logging;
 
 namespace IISLogExplorer.Infrastructure.Indexing;
 
 public sealed class SqliteIndexService : IIndexService
 {
+    private static readonly TimeSpan CheckpointTimeout = TimeSpan.FromSeconds(5);
     private readonly ILogFileScanner _scanner;
     private readonly IIisLogParser _parser;
     private readonly LogFileRepository _files;
@@ -18,11 +21,12 @@ public sealed class SqliteIndexService : IIndexService
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IndexPlanner _planner = new();
     private readonly ISettingsService? _settingsService;
+    private readonly AppLogger? _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public event EventHandler<IndexProgress>? ProgressChanged;
 
-    public SqliteIndexService(ILogFileScanner scanner, IIisLogParser parser, LogFileRepository files, LogEntryRepository entries, FileFingerprintService fingerprints, SqliteConnectionFactory connectionFactory, ISettingsService? settingsService = null)
+    public SqliteIndexService(ILogFileScanner scanner, IIisLogParser parser, LogFileRepository files, LogEntryRepository entries, FileFingerprintService fingerprints, SqliteConnectionFactory connectionFactory, ISettingsService? settingsService = null, AppLogger? logger = null)
     {
         _scanner = scanner;
         _parser = parser;
@@ -31,6 +35,7 @@ public sealed class SqliteIndexService : IIndexService
         _fingerprints = fingerprints;
         _connectionFactory = connectionFactory;
         _settingsService = settingsService;
+        _logger = logger;
     }
 
     public async Task IndexAsync(LogSource source, SearchRequest? priorityRequest = null, CancellationToken cancellationToken = default)
@@ -50,10 +55,11 @@ public sealed class SqliteIndexService : IIndexService
     {
         var total = 0L;
         var records = 0L;
+        var stopwatch = Stopwatch.StartNew();
         var scanned = await _scanner.ScanFilesAsync(source, cancellationToken).ConfigureAwait(false);
         var candidates = _planner.Order(scanned, priorityRequest);
         total = candidates.Sum(file => file.Length);
-        long processed = 0;
+        long completedBytes = 0;
 
         foreach (var scannedFile in candidates)
         {
@@ -72,7 +78,7 @@ public sealed class SqliteIndexService : IIndexService
 
                 if (state.IsFullyIndexed && state.IndexedLength >= file.Length)
                 {
-                    processed += file.Length;
+                    completedBytes += file.Length;
                     continue;
                 }
 
@@ -81,7 +87,7 @@ public sealed class SqliteIndexService : IIndexService
                 var sawNewRecord = false;
                 var lastOffset = state.IndexedLength;
                 var lastLine = state.IndexedLineCount;
-                await foreach (var record in _parser.ParseRecordsAsync(file.FullName, source.Id, state.Id, state.IndexedLength, state.IndexedLineCount, cancellationToken).ConfigureAwait(false))
+                await foreach (var record in _parser.ParseRecordsAsync(file.FullName, source.Id, state.Id, state.IndexedLength, state.IndexedLineCount, state.FieldsHeader, cancellationToken).ConfigureAwait(false))
                 {
                     if (!record.IsCompleteLine)
                     {
@@ -100,8 +106,8 @@ public sealed class SqliteIndexService : IIndexService
                     await _entries.InsertBatchAsync(batch, cancellationToken).ConfigureAwait(false);
                     records += batch.Count;
                     batch.Clear();
-                    await SaveCheckpointAsync(state.Id, file, lastOffset, lastLine, fingerprint).ConfigureAwait(false);
-                    ProgressChanged?.Invoke(this, new IndexProgress(file.Name, lastOffset, total, records, true));
+                    await SaveCheckpointSafelyAsync(state.Id, file, lastOffset, lastLine, fingerprint).ConfigureAwait(false);
+                    ReportProgress(file.Name, total, completedBytes, lastOffset, records);
                     await Task.Yield();
                 }
 
@@ -115,22 +121,38 @@ public sealed class SqliteIndexService : IIndexService
                 var finalFingerprint = await _fingerprints.ComputeAsync(finalFile, CancellationToken.None).ConfigureAwait(false);
                 var complete = lastOffset >= finalFile.Length || state.IndexedLineCount == 0 && !sawNewRecord && EndsWithNewLine(finalFile);
                 var indexedLength = complete ? finalFile.Length : lastOffset;
-                await _files.UpdateProgressAsync(state.Id, finalFile.Length, finalFile.LastWriteTimeUtc, indexedLength, lastLine, complete, finalFingerprint, CancellationToken.None).ConfigureAwait(false);
-                processed += finalFile.Length;
-                ProgressChanged?.Invoke(this, new IndexProgress(file.Name, processed, total, records, true));
+                await _files.UpdateProgressAsync(state.Id, finalFile.Length, finalFile.LastWriteTimeUtc, indexedLength, lastLine, complete, finalFingerprint, IisW3cLogParser.GetActiveHeader(file.FullName), CancellationToken.None).ConfigureAwait(false);
+                completedBytes += finalFile.Length;
+                ReportProgress(file.Name, total, completedBytes, 0, records);
             }
             catch (FileNotFoundException)
             {
+                if (_logger is not null) await _logger.LogAsync($"Index file deleted: {scannedFile.FullName}").ConfigureAwait(false);
             }
             catch (DirectoryNotFoundException)
             {
+                if (_logger is not null) await _logger.LogAsync($"Index directory missing: {scannedFile.FullName}").ConfigureAwait(false);
             }
             catch (UnauthorizedAccessException)
             {
+                if (_logger is not null) await _logger.LogAsync($"Index file unauthorized: {scannedFile.FullName}").ConfigureAwait(false);
             }
         }
 
-        ProgressChanged?.Invoke(this, new IndexProgress(string.Empty, total, total, records, false));
+        stopwatch.Stop();
+        if (_logger is not null)
+        {
+            var seconds = Math.Max(0.0001, stopwatch.Elapsed.TotalSeconds);
+            await _logger.LogAsync($"Index done; files={candidates.Count} bytes={total} records={records} elapsed={stopwatch.Elapsed.TotalSeconds:0.###}s records/sec={records / seconds:0} MB/sec={total / 1024d / 1024d / seconds:0.###}").ConfigureAwait(false);
+        }
+
+        ReportProgress(string.Empty, total, total, 0, records, isRunning: false);
+    }
+
+    private void ReportProgress(string fileName, long total, long completedBytes, long currentFileOffset, long records, bool isRunning = true)
+    {
+        var processed = Math.Min(total, completedBytes + currentFileOffset);
+        ProgressChanged?.Invoke(this, new IndexProgress(fileName, processed, total, records, isRunning));
     }
 
     public Task<IReadOnlyList<LogFileInfo>> GetFileStatesAsync(LogSource source, CancellationToken cancellationToken = default) => _files.GetBySourceAsync(source.Id, cancellationToken);
@@ -173,6 +195,7 @@ public sealed class SqliteIndexService : IIndexService
         try
         {
             await _entries.ClearAsync(cancellationToken).ConfigureAwait(false);
+            IisW3cLogParser.InvalidateHeaderCache();
         }
         finally
         {
@@ -214,10 +237,10 @@ public sealed class SqliteIndexService : IIndexService
         {
             await using var connection = await _connectionFactory.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var command = connection.CreateCommand();
-            command.CommandText = """
-                DELETE FROM LogEntries WHERE TimestampUtc < $cutoff;
-                UPDATE LogFiles SET IndexedLength = 0, IndexedLineCount = 0, IsFullyIndexed = 0, LastIndexedAt = NULL;
-                """;
+            // 只刪除過期 LogEntries；不重設 LogFiles checkpoint，
+            // 否則下一輪 IndexAsync 會從 0 byte 重建，把已刪除的舊資料重新寫回（Retention 資料復活）。
+            // 檔案 truncate / replace / rotation / prefix changed 仍由 RequiresReset() 與 fingerprint 判斷。
+            command.CommandText = "DELETE FROM LogEntries WHERE TimestampUtc < $cutoff;";
             command.Parameters.AddWithValue("$cutoff", DateTimeOffset.UtcNow.AddDays(-retentionDays.Value).ToString("O"));
             return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -227,10 +250,23 @@ public sealed class SqliteIndexService : IIndexService
         }
     }
 
-    private async Task SaveCheckpointAsync(long fileId, FileInfo file, long indexedLength, long lineNumber, string fingerprint)
+    private async Task SaveCheckpointSafelyAsync(long fileId, FileInfo file, long indexedLength, long lineNumber, string fingerprint)
     {
-        var current = new FileInfo(file.FullName);
-        await _files.UpdateProgressAsync(fileId, current.Length, current.LastWriteTimeUtc, indexedLength, lineNumber, false, fingerprint, CancellationToken.None).ConfigureAwait(false);
+        using var timeout = new CancellationTokenSource(CheckpointTimeout);
+        try
+        {
+            var current = new FileInfo(file.FullName);
+            await _files.UpdateProgressAsync(fileId, current.Length, current.LastWriteTimeUtc, indexedLength, lineNumber, false, fingerprint, IisW3cLogParser.GetActiveHeader(file.FullName), timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (IOException)
+        {
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException)
+        {
+        }
     }
 
     private static bool RequiresReset(LogFileInfo state, FileInfo file, string fingerprint)

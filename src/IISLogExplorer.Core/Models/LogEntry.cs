@@ -30,7 +30,7 @@ public sealed record LogEntry
     public string? ForwardedFor { get; init; }
     public string? RealClientIp { get; init; }
     public string? RawLine { get; init; }
-    public IReadOnlyDictionary<string, string?> AdditionalFields { get; init; } = new Dictionary<string, string?>();
+    public IReadOnlyDictionary<string, string?>? AdditionalFields { get; init; }
 
     public string DisplayUrl => string.IsNullOrWhiteSpace(UriQuery) || UriQuery == "-" ? UriStem ?? string.Empty : $"{UriStem}?{UriQuery}";
     public string DisplayStatus => StatusCode is null ? string.Empty : SubStatusCode is null ? StatusCode.Value.ToString() : $"{StatusCode}.{SubStatusCode}";

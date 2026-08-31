@@ -19,7 +19,7 @@ public sealed class LogFileRepository
             INSERT INTO LogFiles (SourceId, FullPath, FileName, FileSize, LastWriteUtc, FileFingerprint)
             VALUES ($source, $path, $name, $size, $write, $fingerprint)
             ON CONFLICT(SourceId, FullPath) DO NOTHING;
-            SELECT Id, SourceId, FullPath, FileName, FileSize, LastWriteUtc, IndexedLength, IndexedLineCount, IsFullyIndexed, HeaderHash, FileFingerprint, LastIndexedAt
+            SELECT Id, SourceId, FullPath, FileName, FileSize, LastWriteUtc, IndexedLength, IndexedLineCount, IsFullyIndexed, HeaderHash, FieldsHeader, FileFingerprint, LastIndexedAt
             FROM LogFiles WHERE SourceId = $source AND FullPath = $path;
             """;
         command.Parameters.AddWithValue("$source", sourceId);
@@ -38,7 +38,7 @@ public sealed class LogFileRepository
         var result = new List<LogFileInfo>();
         await using var connection = await _factory.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT Id, SourceId, FullPath, FileName, FileSize, LastWriteUtc, IndexedLength, IndexedLineCount, IsFullyIndexed, HeaderHash, FileFingerprint, LastIndexedAt FROM LogFiles WHERE SourceId = $source ORDER BY LastWriteUtc DESC";
+        command.CommandText = "SELECT Id, SourceId, FullPath, FileName, FileSize, LastWriteUtc, IndexedLength, IndexedLineCount, IsFullyIndexed, HeaderHash, FieldsHeader, FileFingerprint, LastIndexedAt FROM LogFiles WHERE SourceId = $source ORDER BY LastWriteUtc DESC";
         command.Parameters.AddWithValue("$source", sourceId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -49,17 +49,29 @@ public sealed class LogFileRepository
         return result;
     }
 
-    public async Task UpdateProgressAsync(long fileId, long fileSize, DateTime lastWriteUtc, long indexedLength, long lineCount, bool complete, string fingerprint, CancellationToken cancellationToken = default)
+    public async Task<LogFileInfo?> FindByPathAsync(long sourceId, string fullPath, CancellationToken cancellationToken = default)
     {
         await using var connection = await _factory.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE LogFiles SET FileSize = $size, LastWriteUtc = $write, IndexedLength = $length, IndexedLineCount = $lines, IsFullyIndexed = $complete, FileFingerprint = $fingerprint, LastIndexedAt = $indexed WHERE Id = $id";
+        command.CommandText = "SELECT Id, SourceId, FullPath, FileName, FileSize, LastWriteUtc, IndexedLength, IndexedLineCount, IsFullyIndexed, HeaderHash, FieldsHeader, FileFingerprint, LastIndexedAt FROM LogFiles WHERE SourceId = $source AND FullPath = $path";
+        command.Parameters.AddWithValue("$source", sourceId);
+        command.Parameters.AddWithValue("$path", fullPath);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? Read(reader) : null;
+    }
+
+    public async Task UpdateProgressAsync(long fileId, long fileSize, DateTime lastWriteUtc, long indexedLength, long lineCount, bool complete, string fingerprint, string? fieldsHeader, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _factory.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE LogFiles SET FileSize = $size, LastWriteUtc = $write, IndexedLength = $length, IndexedLineCount = $lines, IsFullyIndexed = $complete, FileFingerprint = $fingerprint, FieldsHeader = $fields, LastIndexedAt = $indexed WHERE Id = $id";
         command.Parameters.AddWithValue("$size", fileSize);
         command.Parameters.AddWithValue("$write", lastWriteUtc.ToString("O"));
         command.Parameters.AddWithValue("$length", indexedLength);
         command.Parameters.AddWithValue("$lines", lineCount);
         command.Parameters.AddWithValue("$complete", complete ? 1 : 0);
         command.Parameters.AddWithValue("$fingerprint", fingerprint);
+        command.Parameters.AddWithValue("$fields", fieldsHeader ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$indexed", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$id", fileId);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -88,7 +100,7 @@ public sealed class LogFileRepository
         var indexed = reader.GetInt64(6);
         var complete = reader.GetInt32(8) != 0;
         var lastWrite = DateTimeOffset.Parse(reader.GetString(5));
-        DateTimeOffset? lastIndexed = reader.IsDBNull(11) ? null : DateTimeOffset.Parse(reader.GetString(11));
+        DateTimeOffset? lastIndexed = reader.IsDBNull(12) ? null : DateTimeOffset.Parse(reader.GetString(12));
         var state = complete && lastIndexed is not null
             ? lastWrite > lastIndexed ? IndexState.Outdated : IndexState.Indexed
             : indexed > 0 ? IndexState.Partial : IndexState.NotIndexed;
@@ -96,7 +108,7 @@ public sealed class LogFileRepository
         {
             Id = reader.GetInt64(0), SourceId = reader.GetInt64(1), FullPath = reader.GetString(2), FileName = reader.GetString(3), FileSize = size,
             LastWriteUtc = lastWrite, IndexedLength = indexed, IndexedLineCount = reader.GetInt64(7), IsFullyIndexed = complete,
-            HeaderHash = reader.IsDBNull(9) ? null : reader.GetString(9), FileFingerprint = reader.IsDBNull(10) ? null : reader.GetString(10), LastIndexedAt = lastIndexed, State = state
+            HeaderHash = reader.IsDBNull(9) ? null : reader.GetString(9), FieldsHeader = reader.IsDBNull(10) ? null : reader.GetString(10), FileFingerprint = reader.IsDBNull(11) ? null : reader.GetString(11), LastIndexedAt = lastIndexed, State = state
         };
     }
 }

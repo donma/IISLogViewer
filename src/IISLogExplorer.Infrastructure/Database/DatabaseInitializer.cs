@@ -40,6 +40,7 @@ public sealed class DatabaseInitializer
                 IndexedLineCount INTEGER NOT NULL DEFAULT 0,
                 IsFullyIndexed INTEGER NOT NULL DEFAULT 0,
                 HeaderHash TEXT NULL,
+                FieldsHeader TEXT NULL,
                 FileFingerprint TEXT NULL,
                 LastIndexedAt TEXT NULL,
                 UNIQUE(SourceId, FullPath)
@@ -84,7 +85,34 @@ public sealed class DatabaseInitializer
             CREATE INDEX IF NOT EXISTS IX_LogEntries_File_Line ON LogEntries(FileId, LineNumber);
             """;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await MigrateLegacySchemaAsync(connection, cancellationToken).ConfigureAwait(false);
         await TryDropUnusedFtsAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task MigrateLegacySchemaAsync(Microsoft.Data.Sqlite.SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        if (!await ColumnExistsAsync(connection, "LogFiles", "FieldsHeader", cancellationToken).ConfigureAwait(false))
+        {
+            await using var alter = connection.CreateCommand();
+            alter.CommandText = "ALTER TABLE LogFiles ADD COLUMN FieldsHeader TEXT NULL;";
+            await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<bool> ColumnExistsAsync(Microsoft.Data.Sqlite.SqliteConnection connection, string table, string column, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table});";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task TryDropUnusedFtsAsync(Microsoft.Data.Sqlite.SqliteConnection connection, CancellationToken cancellationToken)

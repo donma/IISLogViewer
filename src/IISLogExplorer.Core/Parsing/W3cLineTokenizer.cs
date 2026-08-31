@@ -2,42 +2,53 @@ namespace IISLogExplorer.Core.Parsing;
 
 public static class W3cLineTokenizer
 {
-    public static IReadOnlyList<string> Tokenize(string line)
+    public static IReadOnlyList<ReadOnlyMemory<char>> Tokenize(string line)
     {
-        var values = new List<string>();
-        var value = new System.Text.StringBuilder();
+        var tokens = new List<ReadOnlyMemory<char>>();
+        var tokenStart = -1;
+        var tokenEnd = -1;
         var quoted = false;
-        var started = false;
-        foreach (var character in line)
+        for (var index = 0; index < line.Length; index++)
         {
+            var character = line[index];
             if (character == '"')
             {
+                if (tokenStart >= 0)
+                {
+                    tokenEnd = index;
+                }
+                else
+                {
+                    tokenStart = index + 1;
+                }
+
                 quoted = !quoted;
-                started = true;
                 continue;
             }
 
             if (char.IsWhiteSpace(character) && !quoted)
             {
-                if (started)
+                if (tokenStart >= 0)
                 {
-                    values.Add(value.ToString());
-                    value.Clear();
-                    started = false;
+                    tokens.Add(line.AsMemory(tokenStart, (tokenEnd > tokenStart ? tokenEnd : index) - tokenStart));
+                    tokenStart = -1;
+                    tokenEnd = -1;
                 }
+
+                continue;
             }
-            else
+
+            if (tokenStart < 0)
             {
-                value.Append(character);
-                started = true;
+                tokenStart = index;
             }
         }
 
-        if (started)
+        if (tokenStart >= 0)
         {
-            values.Add(value.ToString());
+            tokens.Add(line.AsMemory(tokenStart, (tokenEnd > tokenStart ? tokenEnd : line.Length) - tokenStart));
         }
 
-        return values;
+        return tokens;
     }
 }

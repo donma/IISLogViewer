@@ -57,16 +57,34 @@ public sealed class ClientIpResolver
 
         if (name.Equals("X-Forwarded-For", StringComparison.OrdinalIgnoreCase))
         {
-            return entry.ForwardedFor ?? entry.AdditionalFields.FirstOrDefault(x => x.Key.Contains("forwarded", StringComparison.OrdinalIgnoreCase)).Value;
+            return entry.ForwardedFor ?? FirstMatch(entry, x => x.Contains("forwarded", StringComparison.OrdinalIgnoreCase));
         }
 
         if (name.Equals("X-Real-IP", StringComparison.OrdinalIgnoreCase))
         {
-            return entry.RealClientIp ?? entry.AdditionalFields.FirstOrDefault(x => x.Key.Contains("real-ip", StringComparison.OrdinalIgnoreCase)).Value;
+            return entry.RealClientIp ?? FirstMatch(entry, x => x.Contains("real-ip", StringComparison.OrdinalIgnoreCase));
         }
 
-        var field = entry.AdditionalFields.FirstOrDefault(x => Normalize(x.Key) == Normalize(name));
-        return field.Value;
+        var normalized = Normalize(name);
+        return FirstMatch(entry, x => Normalize(x) == normalized);
+    }
+
+    private static string? FirstMatch(LogEntry entry, Func<string, bool> predicate)
+    {
+        if (entry.AdditionalFields is null)
+        {
+            return null;
+        }
+
+        foreach (var pair in entry.AdditionalFields)
+        {
+            if (predicate(pair.Key))
+            {
+                return pair.Value;
+            }
+        }
+
+        return null;
     }
 
     private static string Normalize(string value) => value.Replace("cs(", "", StringComparison.OrdinalIgnoreCase).Replace("sc(", "", StringComparison.OrdinalIgnoreCase).Replace(")", "", StringComparison.Ordinal).Replace("-", "", StringComparison.Ordinal).Replace("_", "", StringComparison.Ordinal).ToLowerInvariant();

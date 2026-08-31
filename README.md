@@ -83,7 +83,7 @@ IIS Log Explorer 是一套 **Windows x64 專用、免安裝** 的 IIS W3C Log �
 
 ## 測試報告
 
-### 自動化測試（Release）：51 / 51 通過
+### 自動化測試（Release）：68 / 68 通過
 
 | 測試類別 | 內容 |
 | --- | --- |
@@ -98,6 +98,16 @@ IIS Log Explorer 是一套 **Windows x64 專用、免安裝** 的 IIS W3C Log �
 | 資安真實樣本 | 含 SQL Injection、XSS、Path Traversal 的真實攻擊樣本，以正式 34 條規則命中 |
 | 大量資料 | 20,000 與 100,000 筆真實 IIS 格式資料的搜尋、索引、篩選與資安分析 |
 | 效能 | 100,000 筆解析與索引在時間限制內完成 |
+| v2 修正 | Retention、Incremental Header 持久化、Realtime partial line / line number / truncate、Hybrid 全域排序與 MaxResults、Progress 單調、Migration、並發讀取、全過濾器 parity |
+
+### v2 修正重點
+
+- **Retention**：清理只刪過期資料，不再重設 checkpoint，避免被刪舊資料重新索引復活
+- **Parser 效能**：W3cFieldMap 依 index 取值、span tokenizer、ArrayPool 讀行，一般流程不再為每筆建立欄位字典
+- **Incremental Index**：`#Fields` 持久化到 SQLite，重啟後直接從 checkpoint 續跑，不重掃大檔；舊資料庫自動 migration
+- **Hybrid Search**：移除全域鎖、全域 `TimestampUtc DESC` 排序（有界記憶體）、MaxResults 套用於排序後
+- **Realtime**：初次定位到最後完整換行並接續行號，truncate / rotation 安全重置
+- **架構**：IndexCoordinator 單一 writer、MainViewModel 拆分 Search / Index / Realtime、集中錯誤處理與診斷日誌
 
 ### 以真實資料發現並修正的問題
 

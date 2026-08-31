@@ -11,6 +11,8 @@ public sealed class SecurityRuleEngine
 {
     private readonly IReadOnlyList<SecurityRule> _rules;
 
+    public static event Action<Exception?>? LoadFailed;
+
     public SecurityRuleEngine(params SecurityRule[] rules)
     {
         if (rules.Length > 0)
@@ -30,9 +32,10 @@ public sealed class SecurityRuleEngine
         {
             _rules = JsonSerializer.Deserialize<List<SecurityRule>>(File.ReadAllText(path)) ?? [];
         }
-        catch
+        catch (Exception exception)
         {
             _rules = [];
+            LoadFailed?.Invoke(exception);
         }
     }
 

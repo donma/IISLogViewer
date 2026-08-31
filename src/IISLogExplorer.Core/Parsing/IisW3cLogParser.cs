@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
@@ -8,7 +9,7 @@ namespace IISLogExplorer.Core.Parsing;
 
 public sealed class IisW3cLogParser : IIisLogParser
 {
-    private static readonly ConcurrentDictionary<string, FieldDefinition[]> HeaderCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, string> HeaderCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly FieldsHeaderParser _headerParser;
     private readonly ClientIpResolver _ipResolver;
 
@@ -30,15 +31,26 @@ public sealed class IisW3cLogParser : IIisLogParser
         }
     }
 
+    public static string? GetActiveHeader(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return null;
+        }
+
+        return HeaderCache.TryGetValue(path, out var header) ? header : null;
+    }
+
     public async IAsyncEnumerable<LogEntry> ParseAsync(
         string path,
         long sourceId,
         long fileId = 0,
         long startByteOffset = 0,
         long startLineNumber = 0,
+        string? fieldsHeader = null,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        await foreach (var record in ParseRecordsAsync(path, sourceId, fileId, startByteOffset, startLineNumber, cancellationToken).ConfigureAwait(false))
+        await foreach (var record in ParseRecordsAsync(path, sourceId, fileId, startByteOffset, startLineNumber, fieldsHeader, cancellationToken).ConfigureAwait(false))
         {
             yield return record.Entry;
         }
@@ -50,19 +62,23 @@ public sealed class IisW3cLogParser : IIisLogParser
         long fileId = 0,
         long startByteOffset = 0,
         long startLineNumber = 0,
+        string? fieldsHeader = null,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var encoding = await DetectEncodingAsync(path, cancellationToken).ConfigureAwait(false);
-        var fields = Array.Empty<FieldDefinition>();
+        var fieldsMap = new W3cFieldMap();
         if (startByteOffset > 0)
         {
-            if (!HeaderCache.TryGetValue(path, out fields!))
+            var headerLine = fieldsHeader;
+            if (headerLine is null && !HeaderCache.TryGetValue(path, out headerLine))
             {
-                fields = await ReadFieldsBeforeOffsetAsync(path, encoding, startByteOffset, cancellationToken).ConfigureAwait(false);
-                if (fields.Length > 0)
-                {
-                    HeaderCache[path] = fields;
-                }
+                headerLine = await ReadFieldsHeaderAsync(path, encoding, startByteOffset, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (headerLine is not null)
+            {
+                fieldsMap = BuildFieldsMap(headerLine);
+                HeaderCache[path] = headerLine;
             }
         }
         var lineNumber = startLineNumber;
@@ -74,25 +90,27 @@ public sealed class IisW3cLogParser : IIisLogParser
             var text = line.Text.TrimStart('\uFEFF');
             if (text.StartsWith("#Fields:", StringComparison.OrdinalIgnoreCase))
             {
-                fields = _headerParser.Parse(text).ToArray();
+                fieldsMap = BuildFieldsMap(text);
+                HeaderCache[path] = text;
                 continue;
             }
 
-            if (text.Length == 0 || text[0] == '#' || fields.Length == 0)
+            if (text.Length == 0 || text[0] == '#' || fieldsMap.Date < 0)
             {
                 continue;
             }
 
-            var values = W3cLineTokenizer.Tokenize(text);
-            if (values.Count == 0 || !IsRequestRecord(values, fields))
+            var tokens = W3cLineTokenizer.Tokenize(text);
+            if (tokens.Count == 0 || !IsRequestRecord(tokens, fieldsMap))
             {
                 continue;
             }
 
+            var extras = fieldsMap.HasExtraFields ? BuildExtras(tokens, fieldsMap) : null;
             LogEntry entry;
             try
             {
-                entry = Map(values, fields, text, sourceId, fileId, lineNumber);
+                entry = Map(tokens, fieldsMap, extras, text, sourceId, fileId, lineNumber);
             }
             catch
             {
@@ -103,32 +121,57 @@ public sealed class IisW3cLogParser : IIisLogParser
         }
     }
 
-    private static bool IsRequestRecord(IReadOnlyList<string> values, IReadOnlyList<FieldDefinition> fields)
-    {
-        var dateIndex = FindFieldIndex(fields, "date");
-        if (dateIndex >= 0 && dateIndex < values.Count)
-        {
-            var raw = values[dateIndex];
-            if (string.IsNullOrWhiteSpace(raw) || raw == "-")
-            {
-                return true;
-            }
+    private W3cFieldMap BuildFieldsMap(string headerLine) => W3cFieldMap.Build(_headerParser.Parse(headerLine).ToArray());
 
-            return DateTime.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
+    private static bool IsRequestRecord(IReadOnlyList<ReadOnlyMemory<char>> tokens, W3cFieldMap fieldsMap)
+    {
+        var dateIndex = fieldsMap.Date;
+        if (dateIndex < 0 || dateIndex >= tokens.Count)
+        {
+            return true;
         }
 
-        return true;
+        var raw = tokens[dateIndex].Span;
+        if (raw.IsEmpty || raw.SequenceEqual("-"))
+        {
+            return true;
+        }
+
+        if (raw.Length != 10)
+        {
+            return false;
+        }
+
+        if (raw[4] != '-' || raw[7] != '-')
+        {
+            return false;
+        }
+
+        return DateTime.TryParseExact(raw.ToString(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
     }
 
-    private LogEntry Map(IReadOnlyList<string> values, IReadOnlyList<FieldDefinition> fields, string rawLine, long sourceId, long fileId, long lineNumber)
+    private static Dictionary<string, string?>? BuildExtras(IReadOnlyList<ReadOnlyMemory<char>> tokens, W3cFieldMap fieldsMap)
     {
-        var map = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        for (var index = 0; index < fields.Count; index++)
+        Dictionary<string, string?>? extras = null;
+        foreach (var pair in fieldsMap.ExtraIndexes)
         {
-            map[fields[index].Name] = index < values.Count ? NullIfMissing(values[index]) : null;
+            extras ??= new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            extras[pair.Key] = pair.Value < tokens.Count ? NullIfMissing(tokens[pair.Value].ToString()) : null;
         }
 
-        var timestampUtc = ParseTimestamp(Get(map, "date"), Get(map, "time"));
+        return extras;
+    }
+
+    private LogEntry Map(
+        IReadOnlyList<ReadOnlyMemory<char>> tokens,
+        W3cFieldMap fields,
+        IReadOnlyDictionary<string, string?>? extras,
+        string rawLine,
+        long sourceId,
+        long fileId,
+        long lineNumber)
+    {
+        var timestampUtc = ParseTimestamp(At(tokens, fields.Date), At(tokens, fields.Time));
         var entry = new LogEntry
         {
             SourceId = sourceId,
@@ -136,65 +179,34 @@ public sealed class IisW3cLogParser : IIisLogParser
             LineNumber = lineNumber,
             TimestampUtc = timestampUtc,
             TimestampLocal = timestampUtc?.ToLocalTime(),
-            ServerIp = Get(map, "s-ip"),
-            Method = Get(map, "cs-method"),
-            UriStem = Get(map, "cs-uri-stem"),
-            UriQuery = Get(map, "cs-uri-query"),
-            ServerPort = ParseInt(Get(map, "s-port")),
-            Username = Get(map, "cs-username"),
-            ClientIp = Get(map, "c-ip"),
-            UserAgent = Get(map, "cs(User-Agent)", "cs-user-agent"),
-            Referer = Get(map, "cs(Referer)", "cs-referer"),
-            StatusCode = ParseInt(Get(map, "sc-status")),
-            SubStatusCode = ParseInt(Get(map, "sc-substatus")),
-            Win32Status = ParseInt(Get(map, "sc-win32-status")),
-            TimeTakenMs = ParseInt(Get(map, "time-taken")),
-            BytesSent = ParseLong(Get(map, "sc-bytes")),
-            BytesReceived = ParseLong(Get(map, "cs-bytes")),
-            Host = Get(map, "s-host", "cs-host"),
-            ProtocolVersion = Get(map, "cs-version"),
-            Cookie = Get(map, "cs(Cookie)", "cs-cookie"),
-            ForwardedFor = Get(map, "X-Forwarded-For", "x-forwarded-for"),
-            RealClientIp = Get(map, "X-Real-IP", "x-real-ip"),
+            ServerIp = At(tokens, fields.ServerIp),
+            Method = At(tokens, fields.Method),
+            UriStem = At(tokens, fields.UriStem),
+            UriQuery = At(tokens, fields.UriQuery),
+            ServerPort = ParseInt(At(tokens, fields.ServerPort)),
+            Username = At(tokens, fields.Username),
+            ClientIp = At(tokens, fields.ClientIp),
+            UserAgent = At(tokens, fields.UserAgent),
+            Referer = At(tokens, fields.Referer),
+            StatusCode = ParseInt(At(tokens, fields.StatusCode)),
+            SubStatusCode = ParseInt(At(tokens, fields.SubStatusCode)),
+            Win32Status = ParseInt(At(tokens, fields.Win32Status)),
+            TimeTakenMs = ParseInt(At(tokens, fields.TimeTakenMs)),
+            BytesSent = ParseLong(At(tokens, fields.BytesSent)),
+            BytesReceived = ParseLong(At(tokens, fields.BytesReceived)),
+            Host = At(tokens, fields.Host),
+            ProtocolVersion = At(tokens, fields.ProtocolVersion),
+            Cookie = At(tokens, fields.Cookie),
+            ForwardedFor = At(tokens, fields.ForwardedFor),
+            RealClientIp = At(tokens, fields.RealClientIp),
             RawLine = rawLine,
-            AdditionalFields = map
+            AdditionalFields = extras
         };
 
         return entry with { ResolvedClientIp = _ipResolver.Resolve(entry) };
     }
 
-    private static int FindFieldIndex(IReadOnlyList<FieldDefinition> fields, string name)
-    {
-        var normalized = Normalize(name);
-        for (var index = 0; index < fields.Count; index++)
-        {
-            if (Normalize(fields[index].Name) == normalized)
-            {
-                return index;
-            }
-        }
-
-        return -1;
-    }
-
-    private static string? Get(IReadOnlyDictionary<string, string?> values, params string[] names)
-    {
-        foreach (var name in names)
-        {
-            var normalizedName = Normalize(name);
-            foreach (var pair in values)
-            {
-                if (Normalize(pair.Key) == normalizedName)
-                {
-                    return pair.Value;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static string Normalize(string value) => value.Replace("-", "", StringComparison.Ordinal).Replace("_", "", StringComparison.Ordinal).ToLowerInvariant();
+    private static string? At(IReadOnlyList<ReadOnlyMemory<char>> tokens, int index) => index >= 0 && index < tokens.Count ? NullIfMissing(tokens[index].ToString()) : null;
     private static string? NullIfMissing(string? value) => string.IsNullOrWhiteSpace(value) || value == "-" ? null : value;
     private static int? ParseInt(string? value) => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? result : null;
     private static long? ParseLong(string? value) => long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? result : null;
@@ -239,63 +251,77 @@ public sealed class IisW3cLogParser : IIisLogParser
         }
 
         var buffer = new byte[64 * 1024];
-        var lineBytes = new List<byte>(256);
+        var lineBytes = ArrayPool<byte>.Shared.Rent(256);
+        var lineCount = 0;
         var lineStart = stream.Position;
         var position = stream.Position;
-        while (true)
+        try
         {
-            var read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
-            if (read == 0)
+            while (true)
             {
-                if (lineBytes.Count > 0)
+                var read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+                if (read == 0)
                 {
-                    yield return new RawLine(Decode(lineBytes, encoding), lineStart, position, false);
-                }
-
-                yield break;
-            }
-
-            for (var index = 0; index < read; index++)
-            {
-                var value = buffer[index];
-                position++;
-                if (value == (byte)'\n')
-                {
-                    if (lineBytes.Count > 0 && lineBytes[^1] == (byte)'\r')
+                    if (lineCount > 0)
                     {
-                        lineBytes.RemoveAt(lineBytes.Count - 1);
+                        yield return new RawLine(Decode(lineBytes, lineCount, encoding), lineStart, position, false);
                     }
 
-                    yield return new RawLine(Decode(lineBytes, encoding), lineStart, position, true);
-                    lineBytes.Clear();
-                    lineStart = position;
+                    yield break;
                 }
-                else
+
+                for (var index = 0; index < read; index++)
                 {
-                    lineBytes.Add(value);
+                    var value = buffer[index];
+                    position++;
+                    if (value == (byte)'\n')
+                    {
+                        if (lineCount > 0 && lineBytes[lineCount - 1] == (byte)'\r')
+                        {
+                            lineCount--;
+                        }
+
+                        yield return new RawLine(Decode(lineBytes, lineCount, encoding), lineStart, position, true);
+                        lineCount = 0;
+                        lineStart = position;
+                    }
+                    else
+                    {
+                        if (lineCount == lineBytes.Length)
+                        {
+                            var next = ArrayPool<byte>.Shared.Rent(lineBytes.Length * 2);
+                            System.Buffer.BlockCopy(lineBytes, 0, next, 0, lineCount);
+                            ArrayPool<byte>.Shared.Return(lineBytes);
+                            lineBytes = next;
+                        }
+
+                        lineBytes[lineCount++] = value;
+                    }
                 }
             }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(lineBytes);
         }
     }
 
-    private static string Decode(List<byte> bytes, Encoding encoding)
+    private static string Decode(byte[] data, int count, Encoding encoding)
     {
-        var data = bytes.ToArray();
         try
         {
-            return encoding.GetString(data);
+            return encoding.GetString(data, 0, count);
         }
         catch (DecoderFallbackException)
         {
-            return Encoding.Default.GetString(data);
+            return Encoding.Default.GetString(data, 0, count);
         }
     }
     private sealed record RawLine(string Text, long StartOffset, long EndOffset, bool IsComplete);
 
-    private static async Task<FieldDefinition[]> ReadFieldsBeforeOffsetAsync(string path, Encoding encoding, long startByteOffset, CancellationToken cancellationToken)
+    private static async Task<string?> ReadFieldsHeaderAsync(string path, Encoding encoding, long startByteOffset, CancellationToken cancellationToken)
     {
-        var reader = new FieldsHeaderParser();
-        var latest = Array.Empty<FieldDefinition>();
+        var latest = (string?)null;
         await foreach (var line in ReadLinesAsync(path, encoding, 0, cancellationToken).ConfigureAwait(false))
         {
             if (line.StartOffset >= startByteOffset)
@@ -306,7 +332,7 @@ public sealed class IisW3cLogParser : IIisLogParser
             var text = line.Text.TrimStart('\uFEFF');
             if (text.StartsWith("#Fields:", StringComparison.OrdinalIgnoreCase))
             {
-                latest = reader.Parse(text).ToArray();
+                latest = text;
             }
         }
 

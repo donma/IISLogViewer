@@ -12,6 +12,7 @@ public sealed record LogFileInfo
     public long IndexedLineCount { get; init; }
     public bool IsFullyIndexed { get; init; }
     public string? HeaderHash { get; init; }
+    public string? FieldsHeader { get; init; }
     public string? FileFingerprint { get; init; }
     public DateTimeOffset? LastIndexedAt { get; init; }
     public IndexState State { get; init; }
